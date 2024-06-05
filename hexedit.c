@@ -1,84 +1,151 @@
 /**
- * Copyright (C) 2023 djcj@gmx.de
+ * MIT License
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
+ * Copyright (C) 2023-2024 Carsten Janssen
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_NONSTDC_NO_WARNINGS
 #include <io.h>
+#define strcasecmp _stricmp
 #else
 #include <unistd.h>
 #endif
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 
-long get_long(const char *str)
+/* strtol() with error checks */
+long xstrtol(const char *str, int base)
 {
-    long l;
+    char *endptr = NULL;
 
-    if (strlen(str) > 2 && (str[0] == '0' || str[0] == '\\') &&
-        tolower(str[1]) == 'x')
-    {
-        char *copy = strdup(str);
-        copy[0] = '0';
-        l = strtol(copy, NULL, 16);
-        free(copy);
-    } else {
-        l = strtol(str, NULL, 10);
+    errno = 0;
+    long l = strtol(str, &endptr, base);
+
+    if (errno != 0) {
+        perror("strtol()");
+        exit(1);
+    }
+
+    if (*endptr != 0) {
+        fprintf(stderr, "error: argument with invalid characters: ");
+
+        if (isprint(*endptr)) {
+            fprintf(stderr, "`%c'\n", *endptr);
+        } else {
+            fprintf(stderr, "%x\n", *endptr);
+        }
+        exit(1);
     }
 
     return l;
 }
 
-int read_data(const char *arg_offset, const char *arg_length, const char *file)
+/* string to unsigned char */
+uint8_t strtouchar(const char *str, int base)
 {
+    long l = xstrtol(str, base);
+
+    if (l < 0 || l > 255) {
+        fprintf(stderr, "error: argument value outside of 8 bit range: %ld\n", l);
+        exit(1);
+    }
+
+    return (uint8_t)l;
+}
+
+/* xstrtol() wrapper */
+long get_long(const char *str)
+{
+    const size_t len = strlen(str);
+
+    if (len > 2 && (*str == '0' || *str == '\\') &&
+        (str[1] == 'x' || str[1] == 'X'))
+    {
+        /* hexadecimal number */
+        char *copy = strdup(str);
+        copy[0] = '0'; /* turn "\x" prefix into "0x" */
+
+        long l = xstrtol(copy, 16);
+        free(copy);
+
+        return l;
+    } else if (len > 1 && str[0] == '0') {
+        /* octal number */
+        return xstrtol(str, 8);
+    }
+
+    /* decimal number */
+    return xstrtol(str, 10);
+}
+
+/* read data and print as hex digits on screen */
+void read_data(const char *arg_offset, const char *arg_length, const char *file)
+{
+    long offset, len;
+
+    /* open file */
     FILE *fp = fopen(file, "rb");
 
     if (!fp) {
         perror("fopen()");
-        return 1;
+        exit(1);
     }
 
     fseek(fp, 0, SEEK_END);
     long fsize = ftell(fp);
-    long offset = get_long(arg_offset);
 
-    if (offset >= fsize) {
-        fprintf(stderr, "error: offset %s filesize\n", (offset == fsize) ? "equals" : "exceeds");
-        fclose(fp);
-        return 1;
+    if (strcasecmp(arg_offset, "append") == 0) {
+        offset = fsize;
+    } else {
+        offset = get_long(arg_offset);
     }
 
+    /* check offset and filesize */
+    if (offset >= fsize) {
+        fprintf(stderr, "error: offset equals or exceeds filesize\n");
+        fclose(fp);
+        exit(1);
+    }
+
+    /* seek to offset */
     if (fseek(fp, offset, SEEK_SET) == -1) {
         perror("fseek()");
         fclose(fp);
-        return 1;
+        exit(1);
     }
 
-    long len = get_long(arg_length);
-    int n = 1;
+    /* get length to read */
+    if (strcasecmp(arg_length, "all") == 0) {
+        len = 0;
+    } else {
+        len = get_long(arg_length);
+    }
 
     if (len < 1) {
         fseek(fp, 0, SEEK_END);
@@ -86,7 +153,8 @@ int read_data(const char *arg_offset, const char *arg_length, const char *file)
         fseek(fp, offset, SEEK_SET);
     }
 
-    for (long i=0; i < len; i++, n++) {
+    /* read and print bytes */
+    for (long i = 0; i < len; i++) {
         int c = fgetc(fp);
 
         if (c == EOF) {
@@ -94,132 +162,145 @@ int read_data(const char *arg_offset, const char *arg_length, const char *file)
             break;
         }
 
-        printf(" %02X", (unsigned char)c);
+        int j = i + 1;
 
-        if ((i+1) == len || (i > 0 && (i+1) % 16 == 0)) {
+        if (i > 0 && j%4 == 0 && j%16 != 0) {
+            printf(" %02X ", (uint8_t)c);
+        } else {
+            printf(" %02X", (uint8_t)c);
+        }
+
+        if (j == len || (i > 0 && j%16 == 0)) {
             putchar('\n');
-            n = 1;
-        } else if (n == 8) {
-            printf("     ");
         }
     }
 
+    fflush(stdout);
     fclose(fp);
-    return 0;
 }
 
-int write_to_file(const char *file, unsigned char *data, long offset, long num_bytes)
+/* write data to file */
+void write_to_file(const char *file, uint8_t *data, const char *arg_offset, long num_bytes)
 {
+    int sk;
+
+    /* open or create file */
     int fd = open(file, O_RDWR | O_CREAT, 0664);
 
     if (fd == -1) {
         perror("open()");
-        return 1;
+        exit(1);
     }
 
-    if (lseek(fd, offset, SEEK_SET) == -1) {
+    /* seek to offset */
+    if (strcasecmp(arg_offset, "append") == 0) {
+        sk = lseek(fd, 0, SEEK_END);
+    } else {
+        sk = lseek(fd, get_long(arg_offset), SEEK_SET);
+    }
+
+    if (sk == -1) {
         perror("lseek()");
         close(fd);
-        return 1;
+        exit(1);
     }
 
+    /* write data */
     if (write(fd, data, num_bytes) != num_bytes) {
         perror("write()");
         close(fd);
-        return 1;
+        exit(1);
     }
 
+    printf("%ld bytes successfully written to `%s'\n", num_bytes, file);
     close(fd);
-
-    printf("Bytes successfully written to `%s'\n", file);
-
-    return 0;
 }
 
-int write_data(const char *arg_offset, const char *arg_data, const char *file)
+/* write arg_data at arg_offset to file */
+void write_data(const char *arg_offset, const char *arg_data, const char *file)
 {
     if (*arg_data == 0) {
         fprintf(stderr, "error: empty argument\n");
-        return 1;
+        exit(1);
     }
 
-    long len = strlen(arg_data);
-    char *copy = malloc(len + 1);
-    char *ptr = copy;
+    uint8_t *data = malloc((strlen(arg_data) / 2) + 2);
 
-    for (long i=0; i < len; i++) {
-        if (isspace(arg_data[i])) continue;
+    if (!data) {
+        perror("malloc()");
+        exit(1);
+    }
 
-        if (!isxdigit(arg_data[i])) {
-            fprintf(stderr, "error: argument must contain only hexadecimal digits\n");
-            free(copy);
-            return 1;
+    uint8_t *pdata = data;
+    size_t num_bytes = 0;
+    char buf[5] = { '0','x', 0, 0, 0 };
+
+    /* convert hex string to bytes */
+    for (const char *p = arg_data; *p != 0; p++) {
+        if (isspace(*p)) {
+            /* ignore space */
+            continue;
         }
 
-        *ptr++ = arg_data[i];
+        /* error if *p is not a hex digit */
+        if (!isxdigit(*p)) {
+            if (isprint(*p)) {
+                fprintf(stderr, "error: `%c' ", *p);
+            } else {
+                fprintf(stderr, "error: %x ", *p);
+            }
+            fprintf(stderr, "is not a hexadecimal digit\n");
+            free(data);
+            exit(1);
+        }
+
+        if (buf[2] == 0) {
+            /* save char */
+            buf[2] = *p;
+        } else if (buf[3] == 0) {
+            /* save char, convert to byte, reset buffer */
+            buf[3] = *p;
+            *pdata++ = strtouchar(buf, 16);
+            buf[2] = buf[3] = 0;
+            num_bytes++;
+        }
     }
 
-    *ptr = 0;
-    len = strlen(copy);
-
-    unsigned char *data = malloc(len + 2);
-    unsigned char *ptr2 = data;
-    size_t num_bytes = 0;
-
-    if (len % 2 != 0) {
-        copy[len] = copy[len-1];
-        copy[len-1] = '0';
-        copy[len+1] = 0;
-    }
-
-    for (size_t i=0; i < strlen(copy); i += 2) {
-        char tmp[5] = { '0','x',0,0,0 };
-        tmp[2] = copy[i];
-        tmp[3] = copy[i+1];
-        *ptr2++ = (unsigned char)strtol(tmp, NULL, 16);
+    /* trailing single-digit hex number */
+    if (buf[2] != 0) {
+        *pdata = strtouchar(buf, 16);
         num_bytes++;
     }
 
-    int rv = write_to_file(file, data, get_long(arg_offset), num_bytes);
-
-    free(copy);
+    /* save data */
+    write_to_file(file, data, arg_offset, num_bytes);
     free(data);
-
-    return rv;
 }
 
-int memset_write_data(const char *arg_offset, const char *arg_length, const char *arg_char, const char *file)
+/* create a data set of arg_length and write it to file */
+void memset_write_data(const char *arg_offset, const char *arg_length, const char *arg_char, const char *file)
 {
     long len = get_long(arg_length);
     long chrlen = strlen(arg_char);
-    unsigned char *data = NULL;
-    unsigned char c = 0;
+    uint8_t *data;
+    uint8_t c = 0;
 
-#define ERR_INVARG \
-    fprintf(stderr, "error: invalid argument: %s\n", arg_char); \
-    return 1
+    if (len < 1) {
+        fprintf(stderr, "error: length must be 1 or more: %s\n", arg_length);
+        exit(1);
+    }
 
     if (chrlen == 1) {
         /* literal character */
-        c = (unsigned char)arg_char[0];
-    } else if (chrlen > 2 && (arg_char[0] == '0' || arg_char[0] == '\\') &&
-                         tolower(arg_char[1]) == 'x')
+        c = (uint8_t)arg_char[0];
+    } else if (chrlen > 2 && (*arg_char == '0' || *arg_char == '\\') &&
+                (arg_char[1] == 'x' || arg_char[1] == 'X'))
     {
-        /* hex number */
-        char *endptr = NULL;
+        /* hex number (0x.. or \x..) */
         char *copy = strdup(arg_char);
         copy[0] = '0';
-
-        errno = 0;
-        long l = strtol(arg_char, &endptr, 16);
-
-        if (errno != 0 || *endptr != '\0' || l < 0 || l > 255) {
-            free(copy);
-            ERR_INVARG;
-        }
-
+        c = strtouchar(copy, 16);
         free(copy);
-        c = (unsigned char)l;
     } else if (arg_char[0] == '\\') {
         /* control character */
         if (chrlen == 2) {
@@ -239,41 +320,48 @@ int memset_write_data(const char *arg_offset, const char *arg_length, const char
 
         /* escaped decimal number */
         if (c == 0) {
-            char *endptr = NULL;
-            errno = 0;
-            long l = strtol(arg_char + 1, &endptr, 10);
-
-            if (errno != 0 || *endptr != '\0' || l < 0 || l > 255) {
-                ERR_INVARG;
-            }
-
-            c = (unsigned char)l;
+            c = strtouchar(arg_char + 1, 10);
         }
     } else {
-        ERR_INVARG;
+        fprintf(stderr, "error: invalid argument: %s\n", arg_char);
+        exit(1);
     }
 
     data = malloc(len);
+
+    if (!data) {
+        perror("malloc()");
+        exit(1);
+    }
+
     memset(data, c, len);
-
-    int rv = write_to_file(file, data, get_long(arg_offset), len);
+    write_to_file(file, data, arg_offset, len);
     free(data);
-
-    return rv;
 }
 
 void show_help(const char *self)
 {
     printf("usage:\n"
-           "    %s --help\n", self);
-    printf("    %s read <offset> <length> <file>\n", self);
-    printf("    %s write <offset> <data> <file>\n", self);
-    printf("    %s memset <offset> <length> <char> <file>\n"
-           "\n", self);
-    printf("    Offset and length may be hexadecimal prefixed with `0x'/`\\x' or decimal.\n"
-           "    Data must be hexadecimal without prefixes.\n"
-           "    Char can be a literal character, escaped control character, hexadecimal value\n"
-           "    prefixed with `0x'/`\\x' or a decimal number prefixed with `\\'.\n");
+           "  %s --help\n\n", self);
+    printf("  %s read <offset> <length> <file>\n", self);
+    printf("  %s write <offset> <data> <file>\n", self);
+    printf("  %s memset <offset> <length> <char> <file>\n", self);
+
+    printf("\n\n"
+           "  read, write, memset: <offset> and <length> may be hexadecimal prefixed with\n"
+           "    `0x' or `\\x', an octal number prefixed with `0' or decimal\n"
+           "\n"
+           "  read: <length> set to 0 or `all' will print all bytes\n"
+           "\n"
+           "  write, memset: <offset> set to `append' will write data directly after the\n"
+           "    end of the file\n"
+           "\n"
+           "  write: <data> must be hexadecimal without prefixes (whitespaces are ignored)\n"
+           "\n"
+           "  write: <char> can be a literal character, escaped control character,\n"
+           "    hexadecimal value prefixed with `0x' or `\\x', an octal number prefixed\n"
+           "    with `0' or a decimal number prefixed with `\\'\n"
+           "\n");
 }
 
 int main(int argc, char **argv)
@@ -285,14 +373,17 @@ int main(int argc, char **argv)
         }
     }
 
-    if (argc == 5 && strcmp(argv[1], "read") == 0) {
-        return read_data(argv[2], argv[3], argv[4]);
-    }
-    else if (argc == 5 && strcmp(argv[1], "write") == 0) {
-        return write_data(argv[2], argv[3], argv[4]);
-    }
-    else if (argc == 6 && strcmp(argv[1], "memset") == 0) {
-        return memset_write_data(argv[2], argv[3], argv[4], argv[5]);
+    if (argc == 5) {
+        if (strcmp(argv[1], "read") == 0) {
+            read_data(argv[2], argv[3], argv[4]);
+            return 0;
+        } else if (strcmp(argv[1], "write") == 0) {
+            write_data(argv[2], argv[3], argv[4]);
+            return 0;
+        }
+    } else if (argc == 6 && strcmp(argv[1], "memset") == 0) {
+        memset_write_data(argv[2], argv[3], argv[4], argv[5]);
+        return 0;
     }
 
     show_help(argv[0]);
