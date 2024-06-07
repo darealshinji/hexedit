@@ -180,9 +180,13 @@ void read_data(const char *arg_offset, const char *arg_length, const char *file)
 }
 
 /* write data to file */
-void write_to_file(const char *file, uint8_t *data, const char *arg_offset, long num_bytes)
+void write_to_file(const char *file, uint8_t *data, uint8_t *byte, const char *arg_offset, long num_bytes)
 {
     int sk;
+
+    if (!data && !byte) {
+        abort();
+    }
 
     /* open or create file */
     int fd = open(file, O_RDWR | O_CREAT, 0664);
@@ -206,7 +210,15 @@ void write_to_file(const char *file, uint8_t *data, const char *arg_offset, long
     }
 
     /* write data */
-    if (write(fd, data, num_bytes) != num_bytes) {
+    if (byte) {
+        for (long i = 0; i < num_bytes; i++) {
+            if (write(fd, byte, 1) != 1) {
+                perror("write()");
+                close(fd);
+                exit(1);
+            }
+        }
+    } else if (write(fd, data, num_bytes) != num_bytes) {
         perror("write()");
         close(fd);
         exit(1);
@@ -273,7 +285,7 @@ void write_data(const char *arg_offset, const char *arg_data, const char *file)
     }
 
     /* save data */
-    write_to_file(file, data, arg_offset, num_bytes);
+    write_to_file(file, data, NULL, arg_offset, num_bytes);
     free(data);
 }
 
@@ -282,7 +294,6 @@ void memset_write_data(const char *arg_offset, const char *arg_length, const cha
 {
     long len = get_long(arg_length);
     long chrlen = strlen(arg_char);
-    uint8_t *data;
     uint8_t c = 0;
 
     if (len < 1) {
@@ -327,25 +338,22 @@ void memset_write_data(const char *arg_offset, const char *arg_length, const cha
         exit(1);
     }
 
-    data = malloc(len);
+    write_to_file(file, NULL, &c, arg_offset, len);
+}
 
-    if (!data) {
-        perror("malloc()");
-        exit(1);
-    }
-
-    memset(data, c, len);
-    write_to_file(file, data, arg_offset, len);
-    free(data);
+void print_usage(const char *self)
+{
+    printf("usage:\n"
+           "  %s --help\n", self);
+    //printf("  %s r[ead] <file>\n", self);
+    printf("  %s r[ead] [<offset> <length>] <file>\n", self);
+    printf("  %s w[rite] <offset> <data> <file>\n", self);
+    printf("  %s m[emset] <offset> <length> <char> <file>\n", self);
 }
 
 void show_help(const char *self)
 {
-    printf("usage:\n"
-           "  %s --help\n\n", self);
-    printf("  %s read <offset> <length> <file>\n", self);
-    printf("  %s write <offset> <data> <file>\n", self);
-    printf("  %s memset <offset> <length> <char> <file>\n", self);
+    print_usage(self);
 
     printf("\n\n"
            "  read, write, memset: <offset> and <length> may be hexadecimal prefixed with\n"
@@ -364,6 +372,12 @@ void show_help(const char *self)
            "\n");
 }
 
+int is_cmd(const char *arg, const char *cmd)
+{
+    return ((tolower(*arg) == tolower(*cmd) && arg[1] == 0) ||
+        strcasecmp(arg, cmd) == 0);
+}
+
 int main(int argc, char **argv)
 {
     for (int i=0; i < argc; i++) {
@@ -373,20 +387,37 @@ int main(int argc, char **argv)
         }
     }
 
-    if (argc == 5) {
-        if (strcmp(argv[1], "read") == 0) {
+    switch (argc)
+    {
+    case 3:
+        if (is_cmd(argv[1], "read")) {
+            read_data("0", "all", argv[2]);
+            return 0;
+        }
+        break;
+
+    case 5:
+        if (is_cmd(argv[1], "read")) {
             read_data(argv[2], argv[3], argv[4]);
             return 0;
-        } else if (strcmp(argv[1], "write") == 0) {
+        } else if (is_cmd(argv[1], "write")) {
             write_data(argv[2], argv[3], argv[4]);
             return 0;
         }
-    } else if (argc == 6 && strcmp(argv[1], "memset") == 0) {
-        memset_write_data(argv[2], argv[3], argv[4], argv[5]);
-        return 0;
+        break;
+
+    case 6:
+        if (is_cmd(argv[1], "memset")) {
+            memset_write_data(argv[2], argv[3], argv[4], argv[5]);
+            return 0;
+        }
+        break;
+
+    default:
+        break;
     }
 
-    show_help(argv[0]);
+    print_usage(argv[0]);
 
     return 1;
 }
